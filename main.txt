@@ -1,0 +1,237 @@
+library(tibble)
+library(dplyr)
+library(xlsx)
+library(zoo)
+library(tidyr)
+library(broom)
+library(ggplot2)
+library(tidyverse)
+library(cowplot)
+library(reshape2)
+
+# Table 1 contains SDP of each region from 1999-2004
+Table1 <- read.csv("C:/Users/Devansh/Documents/table1.csv")
+
+# Table 2 contains SDP of each region from 2004-2011
+Table2 <- read.csv("C:/Users/Devansh/Documents/table2.csv")
+
+#Table 3 contains SDP of each region from 2011-2019
+Table3 <- read.csv("C:/Users/Devansh/Documents/table3.csv")
+A <- as.matrix(Table1[, -1])
+B <- as.matrix(Table2[, -1])
+adjustment_factors <- B[1, ] / A[6, ]
+for (k in 1:ncol(A)) {
+     A[, k] <- A[, k] * adjustment_factors[k]
+}
+newT1 <- data.frame(YEAR = Table1$YEAR, A)
+colnames(newT1)[-1] <- colnames(Table1)[-1]
+newT2 <- rbind(newT1, Table2)
+newT2 <- newT2 %>% distinct(YEAR, .keep_all = TRUE)
+A <- as.matrix(newT2[, -1])
+B <- as.matrix(Table3[, -1])
+adjustment_factors <- B[1, ] / A[13, ]
+for (k in 1:ncol(A)) {
+     A[, k] <- A[, k] * adjustment_factors[k]
+}
+newT1 <- data.frame(YEAR = newT2$YEAR, A)
+colnames(newT1)[-1] <- colnames(Table1)[-1]
+newT2 <- rbind(newT1, Table3)
+newT2 <- newT2 %>% distinct(YEAR, .keep_all = TRUE)
+newT2 <- newT2[!(newT2$YEAR %in% c("1999-00   ", "2019-20   ")), ]
+newT2 <- rownames_to_column(newT2, var = "Row_Num")
+newT2 <- newT2[, -1]
+
+extract_year <- function(year_range) {
+     as.numeric(substr(year_range, 1, 4))
+}
+
+newT3 <- newT2 %>%
+     mutate(year = extract_year(YEAR)) %>%  # Extract the year from the YEAR column
+     select(-YEAR) %>%  # Remove the YEAR column
+     pivot_longer(cols = -c(year), names_to = "state", values_to = "SDP")  # Reshape the data frame
+
+newT3 <- newT3 %>%
+     mutate(state = case_when(
+         state == "ANDHRA.PRADESH" ~ "Andhra Pradesh",
+         state == "ARUNACHAL.PRADESH" ~ "Arunachal Pradesh",
+         state == "ASSAM" ~ "Assam",
+         state == "BIHAR" ~ "Bihar",
+         state == "GOA" ~ "Goa",
+         state == "GUJARAT" ~ "Gujarat",
+         state == "HARYANA" ~ "Haryana",
+         state == "HIMACHAL.PRADESH" ~ "Himachal Pradesh",
+         state == "JAMMU...KASHMIR" ~ "Jammu And Kashmir",
+         state == "JHARKHAND" ~ "Jharkhand",
+         state == "KARNATAKA" ~ "Karnataka",
+         state == "KERALA" ~ "Kerala",
+         state == "MADHYA.PRADESH" ~ "Madhya Pradesh",
+         state == "CHHATTISGARH" ~ "Chhattisgarh",
+         state == "MAHARASHTRA" ~ "Maharashtra",
+         state == "MANIPUR" ~ "Manipur",
+         state == "MEGHALAYA" ~ "Meghalaya",
+         state == "MIZORAM" ~ "Mizoram",
+         state == "NAGALAND" ~ "Nagaland",
+         state == "ORISSA" ~ "Odisha",
+         state == "PUNJAB" ~ "Punjab",
+         state == "RAJASTHAN" ~ "Rajasthan",
+         state == "SIKKIM" ~ "Sikkim",
+         state == "TAMIL.NADU" ~ "Tamil Nadu",
+         state == "TRIPURA" ~ "Tripura",
+         state == "UTTAR.PRADESH" ~ "Uttar Pradesh",
+         state == "UTTARAKHAND" ~ "Uttarakhand",
+         state == "WEST.BENGAL" ~ "West Bengal",
+         state == "ANDAMAN...NICOBAR.ISLANDS" ~ "Andaman And Nicobar Islands",
+         state == "CHANDIGARH" ~ "Chandigarh",
+         state == "DELHI" ~ "Delhi",
+         state == "PUDUCHERRY" ~ "Pondicherry",
+         TRUE ~ state
+     ))
+
+newT3$state_year_ID <- paste(newT3$state, newT3$year, sep = "_")
+gwq <- read.csv("C:/Users/Devansh/Documents/gwq.csv")
+gwq_subset <- subset(gwq, select = c("state", "district", "year", "dyid", "electricalconductivity"))
+gwq_subset$state_year_ID <- paste(gwq_subset$state, gwq_subset$year, sep = "_")
+group_mean_impute <- function(df) {
+  df <- df %>% 
+    group_by(state) %>% 
+    mutate(electricalconductivity = ifelse(is.na(electricalconductivity), mean(electricalconductivity, na.rm = TRUE), electricalconductivity))
+  return(df)
+}
+gwq_subset_filled <- group_mean_impute(gwq_subset)
+pre_final <- left_join(newT3, gwq_subset_filled, by = "state_year_ID")
+pre_final <- pre_final %>%
+     select(state.x, district, year.x, electricalconductivity, SDP, state_year_ID)
+names(pre_final) <- c("state", "district", "year", "electricalconductivity", "SDP", "state_year_ID")
+pre_final <- pre_final %>%
+  filter(!(state %in% c("Sikkim", "Mizoram", "Manipur")))
+pre_final <- pre_final %>%
+  filter(!(state == "Delhi" & year >= 2011 & year <= 2018))
+
+
+
+# Estimate the regression model
+model <- lm(electricalconductivity ~ SDP, data = pre_final)
+# Summarize the results
+summary(model)
+
+
+# Calculate residuals
+residuals <- resid(model)
+
+# Add residuals to the data frame
+pre_final$residuals <- residuals
+
+# Plot of Groundwater Quality Indicator vs SDP with residuals
+ggplot(pre_final, aes(x = SDP, y = electricalconductivity)) +
+  geom_point(aes(color = residuals), alpha = 0.5) +
+  scale_color_gradient2(low = "darkblue", mid = "gray", high = "darkred") +
+  labs(title = "Groundwater Quality Indicator vs SDP",
+       x = "SDP",
+       y = "Groundwater Quality Indicator",
+       color = "Residuals")
+
+# Plot residuals vs. SDP
+ggplot(pre_final, aes(x = SDP, y = residuals)) +
+  geom_point(alpha = 0.5) +
+  theme_minimal() +
+  labs(x = "State Domestic Product (SDP)", 
+       y = "Residuals",
+       title = "Residuals vs. SDP")
+
+
+
+# Calculate residuals
+residuals <- resid(model)
+
+# Plot a histogram of the residuals
+ggplot(pre_final, aes(x = residuals)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+  theme_minimal() +
+  labs(x = "Residuals", 
+       y = "Frequency",
+       title = "Histogram of Residuals")
+
+# Verify that the sum of residuals is zero
+sum_res <- sum(residuals)
+print(paste("The sum of residuals is: ", sum_res))
+
+
+
+# Add a squared term of SDP to the data frame
+pre_final$SDP_squared <- pre_final$SDP^2
+
+# Estimate the enhanced regression model
+model_enhanced <- lm(electricalconductivity ~ SDP + SDP_squared, data = pre_final)
+
+# Summarize the results
+summary(model_enhanced)
+
+# Prepare a summary statistics table
+summary(pre_final)
+
+
+# Create an empty data frame to store the results
+results <- data.frame(Year = integer(), Intercept = numeric(), SDP = numeric(), SDP_squared = numeric())
+
+# Loop over each year
+for (year in unique(pre_final$year)) {
+  # Subset the data for the current year
+  data_year <- pre_final[pre_final$year == year, ]
+  
+  # Estimate the regression model for the current year
+  model_year <- lm(electricalconductivity ~ SDP + SDP_squared, data = data_year)
+  
+  # Get the coefficients
+  coefficients <- coef(model_year)
+  
+  # Create a new data frame for the coefficients
+  coefficients_df <- data.frame(Year = year, Intercept = coefficients[1], SDP = coefficients[2], SDP_squared = coefficients[3])
+  
+  # Add the coefficients to the results data frame
+  results <- rbind(results, coefficients_df)
+}
+
+# Print the results
+print(results)
+
+# PLOTS
+# Plot the Intercept
+ggplot(results, aes(x = Year, y = Intercept)) +
+  geom_line() +
+  theme_minimal() +
+  labs(x = "Year", 
+       y = "Intercept",
+       title = "Year-wise Intercept")
+
+# Plot the SDP coefficient
+ggplot(results, aes(x = Year, y = SDP)) +
+  geom_line() +
+  theme_minimal() +
+  labs(x = "Year", 
+       y = "SDP Coefficient",
+       title = "Year-wise SDP Coefficient")
+
+# Plot the SDP squared coefficient
+ggplot(results, aes(x = Year, y = SDP_squared)) +
+  geom_line() +
+  theme_minimal() +
+  labs(x = "Year", 
+       y = "SDP Squared Coefficient",
+       title = "Year-wise SDP Squared Coefficient")
+
+
+# Create dummy variables for each region
+pre_final$Northern_Region <- ifelse(pre_final$state %in% c("Chandigarh", "Delhi", "Haryana", "Himachal Pradesh", "Jammu And Kashmir", "Punjab", "Rajasthan"), 1, 0)
+pre_final$North_Eastern_Region <- ifelse(pre_final$state %in% c("Arunachal Pradesh", "Assam", "Meghalaya", "Nagaland", "Tripura"), 1, 0)
+pre_final$Eastern_Region <- ifelse(pre_final$state %in% c("Andaman And Nicobar Islands", "Bihar", "Jharkhand", "Odisha", "West Bengal"), 1, 0)
+pre_final$Central_Region <- ifelse(pre_final$state %in% c("Chhattisgarh", "Madhya Pradesh", "Uttar Pradesh", "Uttarakhand"), 1, 0)
+pre_final$Western_Region <- ifelse(pre_final$state %in% c("Goa", "Gujarat", "Maharashtra"), 1, 0)
+pre_final$Southern_Region <- ifelse(pre_final$state %in% c("Andhra Pradesh", "Karnataka", "Kerala", "Pondicherry", "Tamil Nadu"), 1, 0)
+
+# Estimate the regression model with dummy variables for each region
+model_region <- lm(electricalconductivity ~ SDP + I(SDP^2) + Northern_Region + North_Eastern_Region + Eastern_Region + Central_Region + Western_Region + Southern_Region, data = pre_final)
+
+# Summarize the results
+summary(model_region)
+
+
